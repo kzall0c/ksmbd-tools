@@ -14,14 +14,15 @@ jobs:
   build:
 
     runs-on: ubuntu-latest
+    env:
+      CC: clang
 
     steps:
     - uses: actions/checkout@v4
     - name: Prerequisite for build test
       run: |
-        sudo apt-get install libnl-3-dev libnl-genl-3-dev krb5-multidev heimdal-multidev ninja-build libglib2.0-dev
-        gcc --version
-        g++ --version
+        sudo apt-get install libnl-3-dev libnl-genl-3-dev krb5-multidev heimdal-multidev ninja-build libglib2.0-dev clang
+        clang --version
         pip3 install --user meson
         PATH=$HOME/.local/bin:$PATH
         ./autogen.sh
