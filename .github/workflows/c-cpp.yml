@@ -2,13 +2,8 @@ name: ksmbd-tools CI
 
 on:
   push:
-    branches:
-    - master
-    - next
   pull_request:
-    branches:
-    - master
-    - next
+  workflow_dispatch:
 
 jobs:
   build:
