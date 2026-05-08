@@ -86,6 +86,7 @@ man 8 ksmbd.addshare
 man 8 ksmbd.adduser
 man 8 ksmbd.control
 man 8 ksmbd.mountd
+man 8 ksmbd.selftest
 man 5 ksmbd.conf
 man 5 ksmbdpwd.db
 ```

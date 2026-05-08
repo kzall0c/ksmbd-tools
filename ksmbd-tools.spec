@@ -53,14 +53,17 @@ make %{?_smp_mflags}
 %{_sbindir}/ksmbd.adduser
 %{_sbindir}/ksmbd.control
 %{_sbindir}/ksmbd.mountd
+%{_sbindir}/ksmbd.selftest
 %{_libexecdir}/ksmbd.tools
 %{_mandir}/man8/ksmbd.addshare.8*
 %{_mandir}/man8/ksmbd.adduser.8*
 %{_mandir}/man8/ksmbd.control.8*
 %{_mandir}/man8/ksmbd.mountd.8*
+%{_mandir}/man8/ksmbd.selftest.8*
 %{_mandir}/man5/ksmbd.conf.5*
 %{_mandir}/man5/ksmbdpwd.db.5*
 %{_sysconfdir}/ksmbd/ksmbd.conf.example
+%{_sysconfdir}/ksmbd/ksmbd.selftest.conf
 %{_unitdir}/ksmbd.service
 
 %changelog

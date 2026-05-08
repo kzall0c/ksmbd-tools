@@ -159,6 +159,7 @@ AC_CONFIG_FILES([
 	adduser/Makefile
 	control/Makefile
 	mountd/Makefile
+	selftest/Makefile
 	tools/Makefile
 ])
 

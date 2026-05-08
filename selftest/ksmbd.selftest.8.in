@@ -1,0 +1,64 @@
+.TH KSMBD.SELFTEST "8" "" "ksmbd-tools @ksmbd_tools_version@" "System Administration"
+.SH NAME
+ksmbd.selftest \- run self-tests for ksmbd kernel server
+.SH SYNOPSIS
+.B ksmbd.selftest
+\-\-init
+.br
+.B ksmbd.selftest
+\-\-xfstests
+.br
+.B ksmbd.selftest
+\-\-smbtorture
+.br
+.B ksmbd.selftest
+\-\-unit
+.SH DESCRIPTION
+\fBksmbd.selftest\fR runs self-tests for the \fBksmbd\fR kernel server.
+It automates the setup and execution of test suites against a local ksmbd instance, similar to the Linux kernel tools/kselftest framework.
+\fBksmbd.selftest\fR uses the bundled \fBksmbd.selftest.conf\fR configuration file, handles user creation, daemon startup, test execution, and cleanup.
+.SH OPTIONS
+.TP
+\fB\-\-init\fR
+Install dependencies and build test tools (xfsprogs, smbtorture) into \fB/opt/ksmbd\-selftest\fR.
+Supports Debian/Ubuntu (apt-get) and RHEL/Fedora (dnf).
+Only needs to be run once per machine.
+.TP
+\fB\-\-xfstests\fR
+Run xfstests (filesystem-level tests via CIFS mount).
+Must be run from the xfsprogs-dev build directory containing the \fB./check\fR script.
+Generates a \fBlocal.config\fR for xfstests per the Samba xfstesting-cifs wiki.
+.TP
+\fB\-\-smbtorture\fR
+Run Samba smbtorture (SMB2 protocol-level tests).
+Requires \fBsmbtorture\fR to be in \fBPATH\fR.
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Output version information and exit.
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Display this help and exit.
+.SH FILES
+.TP
+\fB@sysconfdir@/ksmbd/ksmbd.selftest.conf\fR
+Configuration file defining test shares used by \fBksmbd.selftest\fR.
+.SH "EXIT STATUS"
+The exit status is 0 on success and 1 on failure.
+.SH COPYRIGHT
+Copyright \(co 2015-2022 ksmbd-tools contributors.
+License GPLv2: GNU GPL version 2 <https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html>.
+.br
+This is free software: you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.
+.SH "REPORTING BUGS"
+For bug reports, use the issue tracker at https://github.com/cifsd-team/ksmbd-tools/issues.
+.SH "SEE ALSO"
+.TP
+\fBConfiguration File\fR
+\fBksmbd.conf\fR(5)
+.TP
+\fBUtilities\fR
+\fBksmbd.addshare\fR(8),
+\fBksmbd.adduser\fR(8),
+\fBksmbd.control\fR(8),
+\fBksmbd.mountd\fR(8)

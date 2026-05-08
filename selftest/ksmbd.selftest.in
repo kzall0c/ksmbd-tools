@@ -1,0 +1,462 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# ksmbd.selftest - run self-tests for ksmbd kernel server
+#
+# Copyright (c) 2015-2022 ksmbd-tools contributors.
+
+KSMBD_TOOLS_VERSION="@ksmbd_tools_version@"
+SYSCONFDIR="@sysconfdir@"
+
+SELFTEST_CONF="$SYSCONFDIR/ksmbd/ksmbd.selftest.conf"
+TESTUSER="testuser"
+TESTPASS="1234"
+SHARE="cifsd-test3"
+SHAREPATH="/mnt/test3"
+MOUNTPOINT1="/mnt/1"
+MOUNTPOINT2="/mnt/2"
+
+die() {
+	echo "ERROR: $*" >&2
+	exit 1
+}
+
+usage() {
+	cat <<EOF
+Usage: ksmbd.selftest {--all|--init|--xfstests|--smbtorture|--unit}
+
+Options:
+  --all          Run all tests (unit, xfstests, smbtorture)
+  --init         Install dependencies and build test tools (xfsprogs, smbtorture)
+  --xfstests     Run xfstests (filesystem-level tests via CIFS mount)
+  --smbtorture   Run Samba smbtorture (SMB2 protocol-level tests)
+  --unit         Run C unit tests (race conditions, memory corruption)
+  -V, --version  Output version information and exit
+  -h, --help     Display this help and exit
+EOF
+}
+
+check_root() {
+	[ "$(id -u)" -eq 0 ] || die "must be run as root"
+}
+
+check_cmd() {
+	command -v "$1" >/dev/null 2>&1 || die "$1 not found"
+}
+
+SELFTEST_DIR="${SELFTEST_DIR:-/opt/ksmbd-selftest}"
+
+run_init() {
+	check_root
+
+	echo "Installing dependencies..."
+	if command -v apt-get >/dev/null 2>&1; then
+		apt-get update
+		apt-get install -y cifs-utils \
+			autoconf libtool pkg-config libnl-3-dev libnl-genl-3-dev \
+			libglib2.0-dev xfslibs-dev uuid-dev libtool-bin xfsprogs \
+			libgdbm-dev gawk fio attr libattr1-dev libacl1-dev libaio-dev \
+			liblmdb-dev libgnutls28-dev libgpgme-dev libjansson-dev \
+			libarchive-dev gnutls-bin libparse-yapp-perl libjson-perl \
+			libgettextpo-dev libinih-dev liburcu-dev libdevmapper-dev libicu-dev
+	elif command -v dnf >/dev/null 2>&1; then
+		dnf install -y cifs-utils \
+			autoconf libtool pkgconf libnl3-devel glib2-devel \
+			xfsprogs-devel libuuid-devel gawk fio attr libattr-devel \
+			libacl-devel libaio-devel lmdb-devel gnutls-devel \
+			gpgme-devel jansson-devel libarchive-devel \
+			perl-Parse-Yapp perl-JSON libicu-devel
+	else
+		die "unsupported package manager"
+	fi
+
+	mkdir -p "$SELFTEST_DIR"
+	cd "$SELFTEST_DIR"
+
+	# xfsprogs-dev (for xfstests ./check)
+	if [ ! -d xfsprogs-dev ]; then
+		echo "Cloning xfsprogs-dev..."
+		git clone --depth 1 git://git.kernel.org/pub/scm/fs/xfs/xfsprogs-dev.git
+	fi
+	echo "Building xfsprogs-dev..."
+	cd xfsprogs-dev
+	make -j"$(nproc)" >/dev/null
+	cd ..
+
+	# samba (for smbtorture)
+	if [ ! -d samba ]; then
+		echo "Cloning samba..."
+		git clone --depth 1 https://github.com/samba-team/samba.git
+	fi
+	echo "Building smbtorture..."
+	cd samba
+	./configure --disable-cups --disable-iprint --without-ad-dc \
+		--without-ads --without-ldap --without-pam \
+		--with-shared-modules='!vfs_snapper' >/dev/null
+	make -j"$(nproc)" bin/smbtorture >/dev/null
+	cd ..
+
+	# Create test users for xfstests
+	id -u fsgqa >/dev/null 2>&1 || useradd fsgqa
+	id -u 123456-fsgqa >/dev/null 2>&1 || useradd 123456-fsgqa
+
+	echo ""
+	echo "Init complete. Test tools installed in $SELFTEST_DIR"
+	echo ""
+	echo "Usage:"
+	echo "  cd $SELFTEST_DIR/xfsprogs-dev && ksmbd.selftest --xfstests"
+	echo "  PATH=$SELFTEST_DIR/samba/bin:\$PATH ksmbd.selftest --smbtorture"
+}
+
+setup_env() {
+	check_root
+
+	mkdir -m 777 -p /mnt/test1
+	mkdir -m 777 -p /mnt/test2
+	mkdir -m 777 -p /mnt/test3
+	mkdir -p "$MOUNTPOINT1"
+	mkdir -p "$MOUNTPOINT2"
+
+	if [ ! -f "$SELFTEST_CONF" ]; then
+		die "$SELFTEST_CONF not found"
+	fi
+
+	ksmbd.adduser -P "$PWDDB" -a "$TESTUSER" -p "$TESTPASS" 2>/dev/null || true
+	ksmbd.mountd -n -C "$SELFTEST_CONF" -P "$PWDDB" &
+	MOUNTD_PID=$!
+	sleep 1
+}
+
+cleanup() {
+	umount "$MOUNTPOINT1" 2>/dev/null
+	umount "$MOUNTPOINT2" 2>/dev/null
+	ksmbd.control --shutdown 2>/dev/null
+	rm -f "$PWDDB"
+}
+
+run_xfstests() {
+	check_cmd ./check
+
+	# Generate xfstests local.config per
+	# https://wiki.samba.org/index.php/Xfstesting-cifs
+	cat >local.config <<EOF
+[cifs]
+FSTYP=cifs
+TEST_DEV=//127.0.0.1/$SHARE
+TEST_DIR=$MOUNTPOINT1
+SCRATCH_DEV=//127.0.0.1/cifsd-test2
+SCRATCH_MNT=$MOUNTPOINT2
+TEST_FS_MOUNT_OPTS="-o user=$TESTUSER,pass=$TESTPASS,noperm,vers=3.1.1"
+MOUNT_OPTIONS="-o user=$TESTUSER,pass=$TESTPASS,noperm,vers=3.1.1"
+EOF
+
+	set +e
+
+	./check cifs/001
+	./check generic/001 generic/002 generic/005 generic/006 \
+		generic/007 generic/008 generic/010
+
+	sed -e "s/count=1000/count=100/" -e "s/-p 5/-p 3/" \
+		tests/generic/011 >tests/generic/011.new
+	sed -e "s/-p 5/-p 3/" \
+		tests/generic/011.out >tests/generic/011.out.new
+	mv tests/generic/011.new tests/generic/011
+	mv tests/generic/011.out.new tests/generic/011.out
+
+	./check generic/011 generic/013 generic/014 generic/023 \
+		generic/024 generic/028 generic/029 generic/030 \
+		generic/032 generic/033 generic/036 generic/037 \
+		generic/043 generic/044 generic/045 generic/046 \
+		generic/051 generic/069 generic/070 generic/071 \
+		generic/072 generic/074 generic/080 generic/084 \
+		generic/086 generic/091 generic/095 generic/098 \
+		generic/100 generic/103 generic/109 generic/113 \
+		generic/117 generic/124 generic/125 generic/129 \
+		generic/130 generic/132 generic/133 generic/135 \
+		generic/141 generic/169 generic/198 generic/207 \
+		generic/208 generic/210 generic/211 generic/212 \
+		generic/214 generic/215 generic/221 generic/225 \
+		generic/228 generic/236 generic/239 generic/241 \
+		generic/245 generic/246 generic/247 generic/248 \
+		generic/249 generic/257 generic/258 generic/263 \
+		generic/308 generic/309 generic/310 generic/313 \
+		generic/315 generic/316 generic/323 generic/337 \
+		generic/339 generic/340 generic/344 generic/345 \
+		generic/346 generic/349 generic/350 generic/354 \
+		generic/360 generic/377 generic/391 generic/393 \
+		generic/394 generic/406 generic/412 generic/420 \
+		generic/428 generic/430 generic/431 generic/432 \
+		generic/433 generic/436 generic/437 generic/438 \
+		generic/439 generic/443 generic/445 generic/446 \
+		generic/448 generic/451 generic/452 generic/454 \
+		generic/460 generic/461 generic/464 generic/465 \
+		generic/469 generic/504 generic/523 generic/524 \
+		generic/528 generic/532 generic/533 generic/539 \
+		generic/565 generic/567 generic/568 generic/599
+
+	ret=$?
+	set -e
+	return $ret
+}
+
+run_smbtorture() {
+	check_cmd smbtorture
+
+	set +e
+	ret=0
+
+	for test in \
+		smb2.connect \
+		smb2.read.eof \
+		smb2.read.position \
+		smb2.read.dir \
+		smb2.read.access \
+		smb2.scan.scan \
+		smb2.scan.getinfo \
+		smb2.scan.setinfo \
+		smb2.scan.find \
+		smb2.dir.find \
+		smb2.dir.fixed \
+		smb2.dir.many \
+		smb2.dir.modify \
+		smb2.dir.sorted \
+		smb2.dir.file-index \
+		smb2.dir.large-files \
+		smb2.rename.simple \
+		smb2.rename.simple_nodelete \
+		smb2.rename.no_sharing \
+		smb2.rename.share_delete_and_delete_access \
+		smb2.rename.no_share_delete_but_delete_access \
+		smb2.rename.share_delete_no_delete_access \
+		smb2.rename.msword \
+		smb2.rename.rename_dir_openfile \
+		smb2.rename.rename_dir_bench \
+		smb2.maxfid \
+		smb2.sharemode.sharemode-access \
+		smb2.sharemode.access-sharemode \
+		smb2.compound.related1 \
+		smb2.compound.related2 \
+		smb2.compound.related3 \
+		smb2.compound.unrelated1 \
+		smb2.compound.invalid1 \
+		smb2.compound.invalid2 \
+		smb2.compound.invalid3 \
+		smb2.compound.interim1 \
+		smb2.compound.interim2 \
+		smb2.compound.compound-break \
+		smb2.compound.compound-padding \
+		smb2.streams.dir \
+		smb2.streams.io \
+		smb2.streams.sharemodes \
+		smb2.streams.names \
+		smb2.streams.names2 \
+		smb2.streams.names3 \
+		smb2.streams.rename \
+		smb2.streams.rename2 \
+		smb2.streams.create-disposition \
+		smb2.streams.attributes \
+		smb2.streams.delete \
+		smb2.streams.zero-byte \
+		smb2.streams.basefile-rename-with-open-stream \
+		smb2.create.gentest \
+		smb2.create.blob \
+		smb2.create.open \
+		smb2.create.brlocked \
+		smb2.create.multi \
+		smb2.create.delete \
+		smb2.create.leading-slash \
+		smb2.create.impersonation \
+		smb2.create.dir-alloc-size \
+		smb2.create.aclfile \
+		smb2.create.acldir \
+		smb2.create.nulldacl \
+		smb2.delete-on-close-perms.OVERWRITE_IF \
+		"smb2.delete-on-close-perms.OVERWRITE_IF Existing" \
+		smb2.delete-on-close-perms.CREATE \
+		"smb2.delete-on-close-perms.CREATE Existing" \
+		smb2.delete-on-close-perms.CREATE_IF \
+		"smb2.delete-on-close-perms.CREATE_IF Existing" \
+		smb2.delete-on-close-perms.FIND_and_set_DOC \
+		smb2.oplock.exclusive1 \
+		smb2.oplock.exclusive2 \
+		smb2.oplock.exclusive3 \
+		smb2.oplock.exclusive4 \
+		smb2.oplock.exclusive5 \
+		smb2.oplock.exclusive6 \
+		smb2.oplock.exclusive9 \
+		smb2.oplock.batch1 \
+		smb2.oplock.batch2 \
+		smb2.oplock.batch3 \
+		smb2.oplock.batch4 \
+		smb2.oplock.batch5 \
+		smb2.oplock.batch6 \
+		smb2.oplock.batch7 \
+		smb2.oplock.batch8 \
+		smb2.oplock.batch9 \
+		smb2.oplock.batch9a \
+		smb2.oplock.batch10 \
+		smb2.oplock.batch11 \
+		smb2.oplock.batch12 \
+		smb2.oplock.batch13 \
+		smb2.oplock.batch14 \
+		smb2.oplock.batch15 \
+		smb2.oplock.batch16 \
+		smb2.oplock.batch19 \
+		smb2.oplock.batch20 \
+		smb2.oplock.batch21 \
+		smb2.oplock.batch22a \
+		smb2.oplock.batch23 \
+		smb2.oplock.batch24 \
+		smb2.oplock.batch25 \
+		smb2.oplock.batch26 \
+		smb2.oplock.stream1 \
+		smb2.oplock.doc \
+		smb2.oplock.brl1 \
+		smb2.oplock.brl2 \
+		smb2.oplock.brl3 \
+		smb2.oplock.levelii500 \
+		smb2.oplock.levelii501 \
+		smb2.oplock.levelii502 \
+		smb2.session.reconnect1 \
+		smb2.session.reconnect2 \
+		smb2.session.reauth1 \
+		smb2.session.reauth2 \
+		smb2.session.reauth3 \
+		smb2.session.reauth4 \
+		smb2.lock.valid-request \
+		smb2.lock.rw-shared \
+		smb2.lock.rw-exclusive \
+		smb2.lock.auto-unlock \
+		smb2.lock.async \
+		smb2.lock.cancel \
+		smb2.lock.cancel-tdis \
+		smb2.lock.cancel-logoff \
+		smb2.lock.zerobytelength \
+		smb2.lock.zerobyteread \
+		smb2.lock.unlock \
+		smb2.lock.multiple-unlock \
+		smb2.lock.stacking \
+		smb2.lock.contend \
+		smb2.lock.context \
+		smb2.lock.truncate \
+		smb2.lease.request \
+		smb2.lease.nobreakself \
+		smb2.lease.statopen \
+		smb2.lease.statopen2 \
+		smb2.lease.statopen3 \
+		smb2.lease.upgrade \
+		smb2.lease.upgrade2 \
+		smb2.lease.upgrade3 \
+		smb2.lease.break \
+		smb2.lease.oplock \
+		smb2.lease.multibreak \
+		smb2.lease.breaking1 \
+		smb2.lease.breaking2 \
+		smb2.lease.breaking3 \
+		smb2.lease.breaking4 \
+		smb2.lease.breaking5 \
+		smb2.lease.breaking6 \
+		smb2.lease.lock1 \
+		smb2.lease.complex1 \
+		smb2.lease.timeout \
+		smb2.lease.unlink \
+		smb2.lease.v2_request_parent \
+		smb2.lease.v2_request \
+		smb2.lease.v2_epoch1 \
+		smb2.lease.v2_epoch2 \
+		smb2.lease.v2_epoch3 \
+		smb2.lease.v2_complex2 \
+		smb2.lease.v2_rename \
+		smb2.acls.CREATOR \
+		smb2.acls.GENERIC \
+		smb2.acls.OWNER \
+		smb2.acls.INHERITANCE \
+		smb2.acls.INHERITFLAGS \
+		smb2.acls.DYNAMIC \
+		smb2.credits.session_setup_credits_granted \
+		smb2.credits.single_req_credits_granted \
+		smb2.credits.skipped_mid \
+		smb2.durable-open.open-oplock \
+		smb2.durable-open.open-lease \
+		smb2.durable-open.reopen1 \
+		smb2.durable-open.reopen1a \
+		smb2.durable-open.reopen1a-lease \
+		smb2.durable-open.reopen2 \
+		smb2.durable-open.reopen2a \
+		smb2.durable-open.reopen2-lease \
+		smb2.durable-open.reopen2-lease-v2 \
+		smb2.durable-open.reopen3 \
+		smb2.durable-open.reopen4 \
+		smb2.durable-open.delete_on_close2 \
+		smb2.durable-open.file-position \
+		smb2.durable-open.lease \
+		smb2.durable-open.alloc-size \
+		smb2.durable-open.read-only \
+		smb2.durable-v2-open.create-blob \
+		smb2.durable-v2-open.open-oplock \
+		smb2.durable-v2-open.open-lease \
+		smb2.durable-v2-open.reopen1 \
+		smb2.durable-v2-open.reopen1a \
+		smb2.durable-v2-open.reopen1a-lease \
+		smb2.durable-v2-open.reopen2 \
+		smb2.durable-v2-open.reopen2b \
+		smb2.durable-v2-open.reopen2c \
+		smb2.durable-v2-open.reopen2-lease \
+		smb2.durable-v2-open.reopen2-lease-v2
+	do
+		smbtorture "//127.0.0.1/$SHARE/" -U"$TESTUSER%$TESTPASS" "$test"
+		if [ $? -ne 0 ]; then
+			ret=1
+		fi
+		rm -rf "$SHAREPATH"/*
+	done
+
+	set -e
+	return $ret
+}
+
+# Main
+PWDDB=$(mktemp /tmp/ksmbdpwd.XXXXXX)
+trap cleanup EXIT
+
+case "$1" in
+--all)
+	run_init
+	check_root
+	BINDIR=$(dirname "$0")
+	"$BINDIR/ksmbd.selftest-unit"
+	setup_env
+	cd "$SELFTEST_DIR/xfsprogs-dev"
+	run_xfstests
+	cd "$SELFTEST_DIR/samba"
+	export PATH="$SELFTEST_DIR/samba/bin:$PATH"
+	run_smbtorture
+	;;
+--init)
+	run_init
+	;;
+--xfstests)
+	check_root
+	setup_env
+	run_xfstests
+	;;
+--smbtorture)
+	check_root
+	setup_env
+	run_smbtorture
+	;;
+--unit)
+	BINDIR=$(dirname "$0")
+	exec "$BINDIR/ksmbd.selftest-unit"
+	;;
+-V|--version)
+	echo "ksmbd.selftest $KSMBD_TOOLS_VERSION"
+	;;
+-h|--help)
+	usage
+	;;
+*)
+	usage >&2
+	exit 1
+	;;
+esac

@@ -77,4 +77,8 @@ Makefile
 
 # Executables
 ksmbd.*
+!selftest/ksmbd.selftest.8.in
+!selftest/ksmbd.selftest.in
+!selftest/ksmbd.selftest.conf
 ksmbdctl
+selftest/test-suite.log
